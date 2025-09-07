@@ -15,6 +15,16 @@ load_dotenv(dotenv_path=Path(__file__).parent / ".env", override=True)
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 
+BOT_NAME = os.getenv("BOT_NAME", "MSK Tumor Helper Bot")
+DISCLAIMER = os.getenv(
+    "DISCLAIMER",
+    "⚠️ This bot provides educational information only. It is NOT medical advice and should never replace consultation with a qualified healthcare professional."
+)
+
+print(f"[CONFIG] Bot name: {BOT_NAME}")
+print(f"[CONFIG] Disclaimer: {DISCLAIMER[:60]}...")
+
+
 # Quick debug prints (safe)
 print("DEBUG OPENAI:", OPENAI_API_KEY)
 print("DEBUG TELEGRAM:", TELEGRAM_TOKEN)
@@ -49,6 +59,44 @@ if not TELEGRAM_TOKEN:
 client = OpenAI(api_key=OPENAI_API_KEY)
 
 app = FastAPI(title="Chondrosarcoma Telegram Bot")
+@app.post("/webhook/{token}", response_class=PlainTextResponse)
+async def telegram_webhook(token: str, request: Request):
+    if token != TELEGRAM_TOKEN:
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    payload = await request.json()
+    msg = payload.get("message") or payload.get("edited_message") or {}
+    chat = msg.get("chat") or {}
+    chat_id = chat.get("id")
+    text = (msg.get("text") or "").strip()
+
+    if not chat_id:
+        return "ok"
+
+    if text.lower().startswith("/start"):
+        welcome = (
+            f"👋 Welcome to {BOT_NAME}!\n\n"
+            "I can answer common questions about chondrosarcoma based on the information provided by your care team.\n\n"
+            f"{DISCLAIMER}"
+        )
+        send_telegram_message(chat_id, welcome, markdown=False)
+        return "ok"
+
+    if not text:
+        send_telegram_message(chat_id, "Please send a question in text form.", markdown=False)
+        return "ok"
+
+    try:
+        answer_body = generate_answer(text)
+    except Exception as e:
+        print("[ERROR] generate_answer:", repr(e))
+        answer_body = "Sorry, I couldn't generate an answer right now."
+
+    if DISCLAIMER not in answer_body:
+        answer_body = f"{answer_body}\n\n{DISCLAIMER}"
+
+    send_telegram_message(chat_id, answer_body, markdown=False)
+    return "ok"
 
 DATA_DIR = Path(__file__).parent
 DOCS_DIR = DATA_DIR / "docs"
