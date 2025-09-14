@@ -58,6 +58,55 @@ if not TELEGRAM_TOKEN:
 
 client = OpenAI(api_key=OPENAI_API_KEY)
 
+# ---- Language handling (Detect → Translate) ----
+SUPPORTED_LANGS = {"en": "English", "it": "Italian", "de": "German", "es": "Spanish", "fr": "French"}
+
+def detect_language(text: str) -> str:
+    # Return ISO 639-1 code, default 'en' on error.
+    try:
+        completion = client.chat.completions.create(
+            model="gpt-4o-mini",
+            temperature=0,
+            max_tokens=5,
+            messages=[
+                {"role": "system", "content": "Return ONLY a 2-letter ISO 639-1 language code for the user text."},
+                {"role": "user", "content": text[:1000]},
+            ],
+        )
+        code = (completion.choices[0].message.content or "").strip().lower()
+        return code if len(code) == 2 else "en"
+    except Exception as e:
+        print("[WARN] detect_language failed:", repr(e))
+        return "en"
+
+def translate_text(answer_en: str, target_lang: str) -> str:
+    # Translate English answer into target_lang; preserve lists and tone.
+    if target_lang == "en" or target_lang not in SUPPORTED_LANGS:
+        return answer_en
+    try:
+        completion = client.chat.completions.create(
+            model="gpt-4o-mini",
+            temperature=0,
+            max_tokens=1200,
+            messages=[
+                {
+                    "role": "system",
+                    "content": ("You are a careful medical translator. Translate from English to the target language "
+                                "using neutral, plain, patient-friendly wording. Preserve bullet points, line breaks, "
+                                "and the disclaimer's meaning. Do NOT add new content."),
+                },
+                {
+                    "role": "user",
+                    "content": f"Target language: {SUPPORTED_LANGS[target_lang]} ({target_lang})\n\n---\n{answer_en}",
+                },
+            ],
+        )
+        return (completion.choices[0].message.content or "").strip() or answer_en
+    except Exception as e:
+        print("[WARN] translate_text failed:", repr(e))
+        return answer_en
+
+
 app = FastAPI(title="Chondrosarcoma Telegram Bot")
 @app.post("/webhook/{token}", response_class=PlainTextResponse)
 async def telegram_webhook(token: str, request: Request):
@@ -87,7 +136,9 @@ async def telegram_webhook(token: str, request: Request):
         return "ok"
 
     try:
-        answer_body = generate_answer(text)
+        user_lang = detect_language(text)
+        answer_en = generate_answer(text)
+        answer_body = translate_text(answer_en, user_lang)
     except Exception as e:
         print("[ERROR] generate_answer:", repr(e))
         answer_body = "Sorry, I couldn't generate an answer right now."
